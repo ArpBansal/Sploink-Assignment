@@ -1,6 +1,6 @@
 # Sploink — Systems Architecture for Execution-Graph Ingestion, Storage, Scoring, and Replay
 
-## 0. What We're Building
+## 0. What To Build
 
 Sploink ingests every meaningful action from concurrent autonomous-agent sessions — file I/O, shell commands, tool invocations, LLM calls, retries, branches, validations, outputs, and the causal dependencies between them. The events stream in concurrently from many tenants, often **out of order, duplicated, delayed by minutes (sometimes weeks), partially missing, sometimes from sessions whose host machine crashed**, and frequently in **bursts of hundreds of events per second**. We need to:
 
@@ -19,16 +19,19 @@ This document describes the architecture we settled on and the tradeoffs we made
 ```
 [CLI tool on user's machine]
    - emits events via SDK hooks
+  - holds long-lived outbound control stream
    - in-memory buffer, periodic disk flush
    - local append-only log on disk (eventually-consistent)
-   - background pusher with retry + idempotency keying
+  - background pusher with retry + idempotency keying
+  - local command executor gated by policy
         │
-        │  gRPC stream (multiplexed per machine)
+      │  bidirectional WebSocket (events up, ACKs/commands down)
         ▼
-[Gateway] — thin Go service
+[Gateway / Control Plane] — thin Go service
    - mTLS auth
    - schema validation
    - dedup (Layer 2) via NATS KV, returns ACK or DUPLICATE_ACK
+  - fans out queued commands over the existing client stream
         │
         ▼
 ┌────────────────────────────────────────────────────────────────┐
@@ -58,10 +61,26 @@ This document describes the architecture we settled on and the tradeoffs we made
 └──────────┘  └────────────┘  └──────────────┘            └─► storage tiers
 
 [Replay Service] (Go, gRPC) — replay / rewind / fork primitives, reads from NATS for hot data, ClickHouse for warm, Parquet for cold
+[Control Service] (Go + NATS) — persists operator/model-issued commands, delivers them over the CLI-initiated WebSocket; no inbound reachability to the user machine required
 [Batch Reconciler] (Go, cron) — every 5min, runs exact featurize() over a 5% sample of active sessions, pages on persistent disagreement
 ```
 
 The shape is intentional. The durable event log is the single source of truth. Every downstream view — graph DB, columnar store, cold archive, score stream, snapshots — is a deterministic function of that log. Replay, rewind, and fork are essentially "run the same logic against an earlier offset," which is what makes them safe to operate.
+
+### 1.1 Tech Stack Summary
+
+This is a Go-first system, not a generic "big data" template. The concrete stack is:
+
+- **CLI runtime** — Go binary on the user's machine, with a local append-only disk log and a local executor for backend-issued control intents.
+- **Transport** — bidirectional WebSocket over TLS for CLI <-> backend; gRPC remains a later option and is still fine for some backend APIs.
+- **Event backbone** — NATS JetStream for durable streams and NATS KV for the short-window dedup cache.
+- **Online services** — Go services for the gateway/control plane, materializer, scorer, replay service, and batch reconciler.
+- **Worker-local state** — BadgerDB on local NVMe for per-session keyed state and fast crash recovery.
+- **Hot operational store** — Postgres + Apache AGE for active-session graph queries and low-latency intervention lookups.
+- **Warm analytical store** — ClickHouse for 8d-90d scans, dashboards, and retraining data extraction.
+- **Cold archive** — S3 + Iceberg-managed Parquet for indefinite retention, audit, and long-tail replay.
+
+The important non-choice is just as important as the chosen stack: the backend does **not** need a hostable IP address for the CLI, does **not** SSH into customer machines, and does **not** require inbound firewall openings. Control traffic returns over the same outbound stream the CLI already opened.
 
 ---
 
@@ -81,11 +100,54 @@ We deliberately **do not fsync per event**. The reasoning: if the agent process 
 
 ### 2.3 Push Model, Async ACK
 
-The CLI pushes events to Sploink. Sploink does not pull. The agent does not block on the ACK — it emits, keeps working, and the ACK returns asynchronously. The pusher is a background goroutine that reads from the local disk log, sends events over a long-lived gRPC stream to the gateway, and waits for ACKs.
+The CLI pushes events to Sploink. Sploink does not pull. The agent does not block on the ACK — it emits, keeps working, and the ACK returns asynchronously. The pusher is a background goroutine that reads from the local disk log, sends events over a long-lived WebSocket to the gateway, and waits for ACKs.
 
-We chose gRPC streaming (HTTP/2 underneath) specifically for the swarm case: a single user machine running N concurrent agents would otherwise open N TCP connections, but with gRPC streaming we multiplex all events from all agents on that machine over **one** connection per machine. The gateway sees one connection per user machine, not per agent. This is the cheap-to-scale shape.
+We choose WebSocket first because it is simpler to deploy through enterprise proxies and still gives us one long-lived duplex channel per machine. A single user machine running N concurrent agents still multiplexes traffic over **one** connection per machine, not one connection per agent. If we later want stricter generated contracts and richer streaming ergonomics, this layer can move to gRPC without changing the rest of the architecture.
 
-### 2.4 ACK Semantics
+### 2.4 Reverse Control Path (Backend -> CLI)
+
+The ingestion path above is only half of the real system. If we ever want intervention, pause/resume, checkpoint requests, rewind, or fork of a live session, the backend needs a way to talk back to the CLI. The CLI is running on a user's laptop or workstation, usually behind NAT and almost never on a hostable IP, so the backend **cannot** dial it directly.
+
+The correct shape is a **reverse control plane** over the same long-lived outbound connection the CLI already owns:
+
+1. The CLI opens a bidirectional WebSocket at startup and keeps it alive with heartbeats.
+2. Uplink frames on that stream carry telemetry events, health, capabilities, and ACKs.
+3. Downlink frames on that stream carry control intents addressed to `machine_id` and optionally `session_id`.
+4. If the CLI is offline, commands are queued server-side and delivered on the next reconnect if they have not expired.
+5. The CLI emits command lifecycle events (`received`, `started`, `completed`, `rejected`, `expired`) into the normal event log so the command path is fully auditable and replayable.
+
+Operationally, this is a reverse tunnel, not inbound RPC. The backend never needs to know a routable address for the user's machine; it only needs a live authenticated stream that the CLI initiated.
+
+The server-side piece is a small control service backed by a second JetStream stream:
+
+```
+subject: sploink.commands.{tenant}.{machine_id}
+retention: 7d or until terminal command state
+```
+
+Every command record includes:
+
+```
+{
+  command_id,
+  tenant_id,
+  machine_id,
+  session_id,
+  lease_id,
+  command_type,
+  payload,
+  issued_at,
+  expires_at,
+  requires_user_approval,
+  signature
+}
+```
+
+`lease_id` is the fencing token. On reconnect the CLI gets a new lease; any command carrying an old lease is rejected. That prevents a stale stream or duplicated delivery from causing double execution.
+
+The backend should send **control intents**, not arbitrary shell by default. Safe v1 command types are things like `PAUSE_SESSION`, `REQUEST_CHECKPOINT`, `REWIND_TO_STEP`, `FORK_FROM_STEP`, `SWITCH_MODEL_VERSION`, and `PROMPT_FOR_APPROVAL`. If we ever allow raw local command execution, that needs to sit behind explicit tenant policy and local user approval because it is a different trust boundary than telemetry ingestion.
+
+### 2.5 ACK Semantics
 
 The ACK is what authorizes deletion of an event from the local buffer. The protocol has three states:
 
@@ -95,13 +157,13 @@ The ACK is what authorizes deletion of an event from the local buffer. The proto
 
 DUPLICATE_ACK is functionally equivalent to ACK from the buffer-deletion standpoint, but it carries operational signal: if a CLI is seeing DUPLICATE_ACKs frequently, it has a bug in its retry logic, and we surface that as a metric.
 
-### 2.5 Eventually-Consistent Retry
+### 2.6 Eventually-Consistent Retry
 
 When the network is down or the gateway is unavailable, events stay in the local log. They retry on next successful connection — even if "next successful connection" is three weeks later. There is no upper bound on event age at the SDK side.
 
 This is the right call for Sploink because the audit/replay use case demands completeness, but it has consequences that ripple through the rest of the architecture. Most notably: **late events of arbitrary age are a normal occurrence, not an edge case**. The dedup, scoring, and storage layers all have to handle it.
 
-### 2.6 The Gateway
+### 2.7 The Gateway
 
 A thin Go service. It does:
 - mTLS authentication against per-tenant certificates.
@@ -112,7 +174,7 @@ A thin Go service. It does:
 
 It does **not** do ordering, business logic, or any kind of stateful aggregation. Those live downstream where they're testable in isolation. A gateway that "helps" by being smart turns into a hairball within six months.
 
-### 2.7 Idempotency Keying
+### 2.8 Idempotency Keying
 
 The CLI computes the idempotency key when it appends an event to its local buffer:
 
@@ -124,7 +186,7 @@ Content-derived. Same content gives the same key, different content gives a diff
 
 This decision is the keystone of the whole dedup story. Two events with the same key are always duplicates of each other regardless of when, how, or how often they arrive. Two events with different keys are always distinct, even if they share `(turn_number, agent_id, intra_turn_step)` — which the simulator deliberately exercises as the "step collision" case.
 
-### 2.8 The Durable Log
+### 2.9 The Durable Log
 
 NATS JetStream as the durable event spine. We chose NATS over Kafka deliberately:
 
@@ -468,6 +530,8 @@ fork(session_id, from_step, modifications) -> {
 Combines rewind with new-session creation. Reads the rewound state from snapshots, writes it as the genesis state of the new session, records the fork lineage as a session-creation event in the new session's log. The new session's event log starts empty; events accumulate as downstream re-execution emits them.
 
 In Part A, fork is read-only — we present the forked state but don't actually re-run the agent. The intervention engine in Part C extends fork by adding agent re-execution. Recursive forks work as long as each fork creates its own session lineage.
+
+For a **live** agent on a user's machine, backend-side rewind/fork is only half of the story. After the backend computes the desired checkpoint, the control service from §2.4 sends a `REWIND_TO_STEP` or `FORK_FROM_STEP` intent down the CLI-initiated stream. The CLI applies that locally, then emits the resulting execution as ordinary session events.
 
 ### 7.4 Why This Is Mostly Free
 
