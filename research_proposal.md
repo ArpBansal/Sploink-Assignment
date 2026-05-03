@@ -443,19 +443,7 @@ This is not a claim that graphs are *always* better than sequences. For language
 
 ---
 
-## 10. Implementation Plan and Risks
-
-In rough order of work:
-
-1. Define the intervention command schema and integrate it with the existing control plane so actions can be delivered over the CLI's reverse command stream and recorded with command lifecycle events. (~2 weeks)
-2. Instrument the existing event log so intervention intents, executions, and outcomes are first-class events — converts existing data into a partial replay buffer and simulator-calibration set immediately. (~1 week)
-3. Train the LLM-based semantic diagnoser against ground-truth diagnoses derived from historical sessions and human review. Fine-tune an open-source LLM (Llama-3-70B or comparable) hosted by Sploink. (~6 weeks, mostly data labeling)
-4. Extend `simulate.py` to a full agent-environment simulator with intervention-response and outcome models. Calibrate against historical data. (~4 weeks)
-5. Implement the graph-conditioned state encoder (graph encoder + recent-window encoder), using the structural classifier's labels as a bootstrap signal where helpful. (~2 weeks)
-6. Train the PPO meta-controller in the simulator with domain randomization, then pair it with the LLM action parameterizer for concrete action instantiation. Iterate against in-simulator baselines. (~6 weeks, mostly debugging)
-7. DR-evaluate against historical operator data, gated by BC baseline. If it doesn't beat BC, return to step 6.
-8. Shadow-mode deploy over the existing control plane so actions are logged but not executed. (~4 weeks of operating before next stage)
-9. Tier-3 rollout with conservative action gating and manual review of `terminate` decisions. (Per §7)
+## 10. Risks
 
 The largest risk is **simulator calibration**. The intervention-response model is the load-bearing component of the whole approach. If predictions of "what happens after a `rewind`" are systematically wrong, the policy will be too. Mitigations: domain randomization, DR off-policy evaluation, gradual rollout.
 
