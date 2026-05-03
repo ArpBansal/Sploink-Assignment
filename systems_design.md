@@ -25,9 +25,14 @@ This document describes the architecture we settled on and the tradeoffs we made
   - background pusher with retry + idempotency keying
   - local command executor gated by policy
         │
-      │  bidirectional WebSocket (events up, ACKs/commands down)
+  │  bidirectional WebSocket over TLS
         ▼
-[Gateway / Control Plane] — thin Go service
+[Public Load Balancer / Ingress]
+  - preserves WebSocket upgrades
+  - spreads live connections across gateway replicas
+    │
+    ▼
+[Gateway / Control Plane replicas] — thin Go service
    - mTLS auth
    - schema validation
    - dedup (Layer 2) via NATS KV, returns ACK or DUPLICATE_ACK
@@ -72,9 +77,9 @@ The shape is intentional. The durable event log is the single source of truth. E
 This is a Go-first system, not a generic "big data" template. The concrete stack is:
 
 - **CLI runtime** — Go binary on the user's machine, with a local append-only disk log and a local executor for backend-issued control intents.
-- **Transport** — bidirectional WebSocket over TLS for CLI <-> backend; gRPC remains a later option and is still fine for some backend APIs.
+- **Transport** — bidirectional WebSocket over TLS for CLI <-> backend, fronted by a public L4/L7 load balancer that preserves WebSocket upgrades; gRPC remains a later option and is still fine for some backend APIs.
 - **Event backbone** — NATS JetStream for durable streams and NATS KV for the short-window dedup cache.
-- **Online services** — Go services for the gateway/control plane, materializer, scorer, replay service, and batch reconciler.
+- **Online services** — Go services for the gateway/control plane, materializer, scorer, replay service, and batch reconciler. The gateway/control plane runs as multiple stateless replicas behind the load balancer.
 - **Worker-local state** — BadgerDB on local NVMe for per-session keyed state and fast crash recovery.
 - **Hot operational store** — Postgres + Apache AGE for active-session graph queries and low-latency intervention lookups.
 - **Warm analytical store** — ClickHouse for 8d-90d scans, dashboards, and retraining data extraction.
@@ -102,7 +107,7 @@ We deliberately **do not fsync per event**. The reasoning: if the agent process 
 
 The CLI pushes events to Sploink. Sploink does not pull. The agent does not block on the ACK — it emits, keeps working, and the ACK returns asynchronously. The pusher is a background goroutine that reads from the local disk log, sends events over a long-lived WebSocket to the gateway, and waits for ACKs.
 
-We choose WebSocket first because it is simpler to deploy through enterprise proxies and still gives us one long-lived duplex channel per machine. A single user machine running N concurrent agents still multiplexes traffic over **one** connection per machine, not one connection per agent. If we later want stricter generated contracts and richer streaming ergonomics, this layer can move to gRPC without changing the rest of the architecture.
+We choose WebSocket first because it is simpler to deploy through enterprise proxies and still gives us one long-lived duplex channel per machine. That connection lands on a public load balancer which preserves the WebSocket upgrade and pins the live TCP session to one gateway replica for the life of that connection; on reconnect, the CLI may land on any healthy replica. A single user machine running N concurrent agents still multiplexes traffic over **one** connection per machine, not one connection per agent. If we later want stricter generated contracts and richer streaming ergonomics, this layer can move to gRPC without changing the rest of the architecture.
 
 ### 2.4 Reverse Control Path (Backend -> CLI)
 
@@ -117,6 +122,8 @@ The correct shape is a **reverse control plane** over the same long-lived outbou
 5. The CLI emits command lifecycle events (`received`, `started`, `completed`, `rejected`, `expired`) into the normal event log so the command path is fully auditable and replayable.
 
 Operationally, this is a reverse tunnel, not inbound RPC. The backend never needs to know a routable address for the user's machine; it only needs a live authenticated stream that the CLI initiated.
+
+Because the CLI may reconnect through the load balancer onto a different gateway replica, connection ownership is ephemeral by design. Commands are therefore persisted in JetStream and matched to the currently live `(tenant_id, machine_id, lease_id)` stream rather than to a specific gateway instance.
 
 The server-side piece is a small control service backed by a second JetStream stream:
 
@@ -165,14 +172,14 @@ This is the right call for Sploink because the audit/replay use case demands com
 
 ### 2.7 The Gateway
 
-A thin Go service. It does:
+A thin Go service running as a horizontally-scaled replica set behind the public load balancer. It does:
 - mTLS authentication against per-tenant certificates.
 - Protobuf schema validation.
 - Per-tenant rate limiting (sized to detect a runaway tenant, not to absorb bursts; real bursts go through).
 - Layer-2 dedup (§4.2).
 - Append to NATS JetStream.
 
-It does **not** do ordering, business logic, or any kind of stateful aggregation. Those live downstream where they're testable in isolation. A gateway that "helps" by being smart turns into a hairball within six months.
+It does **not** do ordering, business logic, or any kind of stateful aggregation. Those live downstream where they're testable in isolation. The replica is allowed to own a live WebSocket while that connection exists, but no correctness property depends on which replica owns it. A gateway that "helps" by being smart turns into a hairball within six months.
 
 ### 2.8 Idempotency Keying
 
