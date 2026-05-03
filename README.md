@@ -121,8 +121,8 @@ The dataset includes every adversarial condition the spec requires:
 | Part A systems design | ~ 5.5 hrs |
 | Part B simulator + classifier (incl. tuning the progressing/drifting boundary) | ~2 hrs |
 | Part C research proposal | ~3.5 hrs |
-| Part D reflection + repo polish | ~30 min |
-| **Total** | **~11.5 h** |
+| Part D reflection + repo polish | ~1.5 hrs |
+| **Total** | **~12.5 h** |
 
 The single biggest time sink was diagnosing why progressing was being misclassified as drifting on the first classifier run. Looking at per-class feature percentiles immediately exposed that `output_entropy` was the cleanest separator (progressing p50 = 3.17, drifting p50 = 5.91), and re-tuning around that took the classifier from an unusable first pass to a strong result on the clean synthetic split. I then made the simulator harder with realistic overlap, which dropped the final reported score to 92.2% but produced a more honest evaluation.
 
