@@ -389,7 +389,7 @@ This is where most of the engineering complexity in the storage layer actually l
 
 We could skip the hot graph store entirely and run everything against ClickHouse with materialized views for common subgraph queries. Trade: query latency for active sessions goes from sub-50ms to a few hundred ms. Operational complexity drops by one whole engine.
 
-Worth considering if the customer doesn't need real-time intervention (Part C), or if we're at the 1M/day or 10M/day tier where ClickHouse can comfortably hold even active-session queries in its sub-second budget. The three-tier design above is what we'd build for the 100M/day target. The two-tier version is what we'd build for a startup at tier 1 in year one and migrate to three-tier as scale demands.
+Worth considering if we're at the 1M/day or 10M/day tier where ClickHouse can comfortably hold even active-session queries in its sub-second budget. The three-tier design above is what we'd build for the 100M/day target. The two-tier version is what we'd build for a startup at tier 1 in year one and migrate to three-tier as scale demands.
 
 ---
 

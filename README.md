@@ -152,6 +152,8 @@ The classifier and the proposal are both written to assume v1 is the *interpreta
 - **I personally think we can try a webhook based approach rather than websockets, due to optimization needed for handling million websockets. websockets are resource intensive in nature. 
 If webhook based system can work for cli to backend call, I think will be better to handle and save dev time too.**
 
+- Best intervention initially will have prompt injection, prompts designed per task (i mean special prompts for code, sales etc.)
+
 ### Why accuracy dropped from 98.8% to 92.2%.
 
 Initially without giving much thought i went for hard labels, no overlap, which was not realisitic.
