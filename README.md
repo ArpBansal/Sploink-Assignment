@@ -131,6 +131,13 @@ The single biggest time sink was diagnosing why progressing was being misclassif
 1. **The simulator is still simpler than real agent behavior, even after I made it harder.** The final 92.2% result is on a more real synthetic dataset than the earlier 98.8% clean split, but it is still synthetic. Real traces will have messier semantics, weaker class boundaries, and more ambiguity between drifting and failing than this generator produces. I would still expect a rule-based classifier like this to land closer to the 75–85% range on real production data, which is why the production path should move toward a calibrated GBM or a learned graph-conditioned encoder.
 2. **The intervention proposal assumes enough historical intervention data exists to calibrate the simulator and evaluate the policy.** The event log and reverse control plane in `systems_design.md` make that data path plausible going forward, but the hard part is coverage: rare, high-value actions like `rewind`, `terminate`, and `request_human_approval` will be sparse at bootstrap time. The proposal does not literally require gold labels for "the right action," but it does rely on enough `(session, intervention, outcome)` triples and enough human-reviewed diagnosis data to fit the simulator, train the semantic layer, and make DR evaluation credible.
 
+## Usage of AI
+
+I use AI in extreme boundations with one core principle: AI follows a plan, but the plan is mine, not AI's. I don't "Vibe Code", I do AI assisted coding. 
+I review the code against a set of expectations, and making sure that AI MUST NOT DEVIATE FROM THE PLAN. If it does, I stop and correct the course.
+
+If making system design, make sure that we go through alternatives, we know what are the options, what aligns with system etc.
+
 ## What v2 looks like in 30 days
 
 - **Implement the streaming feature aggregator** (HyperLogLog for cycle counts, Misra-Gries for target entropy) in the Go/NATS scoring path described in `systems_design.md` and benchmark the actual p99 latency of that pipeline. Confirms whether the §6 latency claims survive contact with reality.
