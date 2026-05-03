@@ -18,6 +18,7 @@ This repository contains my full submission for the Sploink Research Engineer as
 ├── features.csv              ← per-session feature dump (debugging aid)
 ```
 
+
 ## Reproducing the Result
 
 ```bash
@@ -109,8 +110,9 @@ The dataset includes every adversarial condition the spec requires:
 - Part C: `research_proposal.md` presents a graph-conditioned POMDP with simulator-trained PPO, an LLM semantic diagnoser plus action parameterizer, DR off-policy evaluation, staged rollout, failure modes with safeguards, and a dedicated graph-vs-sequence comparison.
 
 **Partial / skipped:**
-- `optional_ui/` — skipped, I don't do UI/frontend.
-- `training.log` — not produced. The classifier is rule-based, not ML-trained. The `features.csv` dump serves the same auditing purpose for this submission. I didn't spend time fabricating a training artifact for a non-trained model. In production, the natural next step would be a calibrated GBM or a learned graph-conditioned encoder.
+- Task B - Partial, in sense that, I put less time in it, so didn't went for exploring ML, sequence model or other approach.
+- `optional_ui/` - skipped, I don't do UI/frontend.
+- `training.log` - not produced. The classifier is rule-based, not ML-trained. The `features.csv` dump serves the same auditing purpose for this submission. I didn't spend time fabricating a training artifact for a non-trained model. In production, the natural next step would be a calibrated GBM or a learned graph-conditioned encoder.
 
 ## Time spent
 
@@ -131,7 +133,6 @@ The single biggest time sink was diagnosing why progressing was being misclassif
 
 ## What v2 looks like in 30 days
 
-- **Replace the classifier's thresholds with a calibrated gradient-boosted model** trained against the same features, on synthetic + a small amount of real data. Same interface, better generalisation. Add SHAP attributions so per-prediction explanations are still cheap.
 - **Implement the streaming feature aggregator** (HyperLogLog for cycle counts, Misra-Gries for target entropy) in the Go/NATS scoring path described in `systems_design.md` and benchmark the actual p99 latency of that pipeline. Confirms whether the §6 latency claims survive contact with reality.
 - **Stand up the simulator-calibration and shadow-mode intervention path from Part C** over the existing reverse control plane. Even before executing actions, shadow-mode decisions plus operator review would start producing the intervention data needed for DR evaluation and later policy training.
 
@@ -139,6 +140,10 @@ The single biggest time sink was diagnosing why progressing was being misclassif
 
 The classifier and the proposal are both written to assume v1 is the *interpretable, demonstrable, defensible* version, and v2 is the *higher-capacity, better-calibrated* version that comes once the v1 is in production and the data shape is understood. That ordering is deliberate and I'd defend it in the walkthrough.
 
+## Something i thought on last minute
+
+- **I personally think we can try a webhook based approach rather than websockets, due to optimization needed for handling million websockets. websockets are resource intensive in nature. 
+If webhook based system can work for cli to backend call, I think will be better to handle and save dev time too.**
 
 ### Why accuracy dropped from 98.8% to 92.2%.
 
