@@ -290,23 +290,7 @@ The first cut. We hold out a fixed evaluation suite of simulator scenarios — p
 Before any production deployment, we evaluate the simulator-trained policy against the historical data it was *not* trained on, using **doubly-robust off-policy evaluation** [Jiang & Li, 2016; Thomas & Brunskill, 2016]:
 
 $$
-\hat{V}_{\text{DR}}(\pi)
-=
-\frac{1}{N}\sum_{i=1}^{N}
-\left[
-\hat V\!\left(s_0^{(i)}\right)
-+
-\sum_{t=0}^{T_i-1}
-\gamma^t\,
-\rho_{0:t}^{(i)}
-\Big(
-r_t^{(i)}
-+
-\gamma \, \hat V\!\left(s_{t+1}^{(i)}\right)
--
-\hat Q\!\left(s_t^{(i)}, a_t^{(i)}\right)
-\Big)
-\right]
+\hat{V}_{\text{DR}}(\pi) = \frac{1}{N}\sum_{i=1}^{N} \left[ \hat{V}\!\left(s_0^{(i)}\right) + \sum_{t=0}^{T_i-1} \gamma^t\, \rho_{0:t}^{(i)} \Big( r_t^{(i)} + \gamma\, \hat{V}\!\left(s_{t+1}^{(i)}\right) - \hat{Q}\!\left(s_t^{(i)}, a_t^{(i)}\right) \Big) \right]
 $$
 
 where $\rho_{0:t} = \prod_{k=0}^{t} \pi(a_k \mid s_k) / \mu(a_k \mid s_k)$ is the cumulative importance ratio of the new policy $\pi$ to the historical policy $\mu$, and $\hat Q, \hat V$ are model-based estimates that act as control variates. This is the standard step-wise DR construction: it is unbiased if either the importance weights or the model is correct, and it has lower variance than naive importance sampling in the regimes we care about.
