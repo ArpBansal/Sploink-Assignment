@@ -55,15 +55,15 @@ We're explicit that this is a POMDP whose state, observation, and action represe
 
 **State** $s_t = (G_t, b_t, \tau_t, c_t)$ where:
 
-- $G_t = (V_t, E_t)$ is the typed execution subgraph for the session up to step $t$. Vertices are typed by `action` (read_file, retry, etc.); edges are typed in $\{\textsc{next}, \textsc{reads}, \textsc{branched\_from}, \textsc{retried}, \textsc{validated\_by}\}$.
+- $G_t = (V_t, E_t)$ is the typed execution subgraph for the session up to step $t$. Vertices are typed by `action` (read_file, retry, etc.); edges are typed in $\{\texttt{next}, \texttt{reads}, \texttt{branched-from}, \texttt{retried}, \texttt{validated-by}\}$.
 - $b_t \in \mathbb{R}^k$ is the agent's latent belief — its planner state, its working hypothesis. We never observe this directly; it is the *partially observable* part.
 - $\tau_t$ is the task descriptor — the user's original goal, encoded once at session start.
 - $c_t$ is the chain-of-thought / planner trace observed up to time $t$. Available but not fully revealing of $b_t$.
 
-**Observation** $o_t = (G_t, c_t, \text{score}_t, \text{semantic\_diag}_t)$ where:
+**Observation** $o_t = (G_t, c_t, \text{score}_t, \text{semantic-diag}_t)$ where:
 
 - $\text{score}_t \in \Delta^4$ is the per-class evidence distribution from the structural classifier (`solution.py`).
-- $\text{semantic\_diag}_t$ is the LLM-based semantic diagnoser's structured output (§4.2).
+- $\text{semantic-diag}_t$ is the LLM-based semantic diagnoser's structured output (§4.2).
 
 The policy operates on belief states $\beta_t = p(s_t \mid o_{1:t}, a_{1:t-1})$, approximated via a recurrent encoder over the observation history.
 
@@ -181,7 +181,7 @@ Per-edge-type weight matrices $W_e$ are crucial — a `RETRIED` edge is not the 
 **Fused representation.**
 
 $$
-z_t = [z^{\text{graph}}_t \,;\, z^{\text{recent}}_t \,;\, \text{score}_t \,;\, \text{embed}(\text{semantic\_diag}_t)]
+z_t = [z^{\text{graph}}_t \,;\, z^{\text{recent}}_t \,;\, \text{score}_t \,;\, \text{embed}(\text{semantic-diag}_t)]
 $$
 
 Concatenation of: graph encoding, recent-window encoding, structural classifier output, semantic diagnoser output. This is the input to the recurrent belief tracker:
